@@ -1,6 +1,7 @@
 package com.portal.assistant.gemini
 
 import com.portal.assistant.gemini.LiveClient.ServerEvent
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -10,6 +11,16 @@ import java.util.Base64
 
 /** Pure parsing + setup-JSON tests for the Live API boundary (no socket, no Android). */
 class LiveClientTest {
+
+    @Test fun audioFrameUsesCurrentRealtimeFieldAndPreservesPcm() {
+        val pcm = byteArrayOf(0, 1, -128, 127, -1, 0)
+        val message = JSONObject(LiveClient.buildRealtimeAudio(pcm))
+        val realtime = message.getJSONObject("realtimeInput")
+        assertFalse(realtime.has("mediaChunks"))
+        val audio = realtime.getJSONObject("audio")
+        assertEquals("audio/pcm;rate=16000", audio.getString("mimeType"))
+        assertTrue(pcm.contentEquals(Base64.getDecoder().decode(audio.getString("data"))))
+    }
 
     // ---- parseServerMessage ------------------------------------------------------------------------
 
@@ -194,10 +205,13 @@ class LiveClientTest {
 
     @Test fun emptyDeclarationsProducesSingleEntryTools() {
         // Passing an explicit empty list must not emit a functionDeclarations entry.
-        val setup = JSONObject(LiveClient.buildSetup("m", "p", emptyList())).getJSONObject("setup")
-        val tools = setup.getJSONArray("tools")
-        assertEquals(1, tools.length())
-        assertTrue(tools.getJSONObject(0).has("googleSearch"))
+        for (model in listOf("m", "gemini-3.8-live", "models/gemini-3.8-live")) {
+            val setup = JSONObject(LiveClient.buildSetup(model, "p", emptyList())).getJSONObject("setup")
+            val tools = setup.getJSONArray("tools")
+            assertEquals(1, tools.length())
+            assertTrue(tools.getJSONObject(0).has("googleSearch"))
+            assertFalse(tools.getJSONObject(0).has("functionDeclarations"))
+        }
     }
 
     @Test fun declarationsAddSecondToolsEntry() {
@@ -209,6 +223,118 @@ class LiveClientTest {
         val declArray = tools.getJSONObject(1).getJSONArray("functionDeclarations")
         assertEquals(1, declArray.length())
         assertEquals("portal._spike_noop", declArray.getJSONObject(0).getString("name"))
+    }
+
+    @Test fun setup38MakesEveryDeclarationBlocking() {
+        val declarations = listOf(
+            JSONObject("""{"name":"portal.get_time","description":"Get the time"}"""),
+            JSONObject("""{"name":"portal.set_timer","description":"Set a timer","behavior":"NON_BLOCKING"}"""),
+            JSONObject("""{"name":"portal.get_volume","description":"Get volume","behavior":"BLOCKING"}"""),
+        )
+        for (model in listOf("gemini-3.8-live", "models/gemini-3.8-live")) {
+            val setup = JSONObject(LiveClient.buildSetup(model, "p", declarations)).getJSONObject("setup")
+            assertEquals("models/gemini-3.8-live", setup.getString("model"))
+            val serialized = setup.getJSONArray("tools").getJSONObject(1).getJSONArray("functionDeclarations")
+            assertEquals(3, serialized.length())
+            for ((index, name) in listOf("portal.get_time", "portal.set_timer", "portal.get_volume").withIndex()) {
+                assertEquals(name, serialized.getJSONObject(index).getString("name"))
+                assertEquals(model, "BLOCKING", serialized.getJSONObject(index).optString("behavior"))
+            }
+        }
+    }
+
+    @Test fun setup38DoesNotMutateDeclarationsReusedBy25Fallback() {
+        val plain = JSONObject("""{"name":"portal.get_time","description":"Get the time"}""")
+        val async = JSONObject("""{"name":"portal.get_volume","description":"Get volume","behavior":"NON_BLOCKING"}""")
+        val declarations = listOf(plain, async)
+        val originals = declarations.map { it.toString() }
+
+        for (model in listOf("gemini-3.8-live", "models/gemini-3.8-live")) {
+            LiveClient.buildSetup(model, "p", declarations)
+            assertFalse(plain.has("behavior"))
+            assertEquals("NON_BLOCKING", async.getString("behavior"))
+            assertEquals(originals, declarations.map { it.toString() })
+        }
+
+        val fallback = JSONObject(LiveClient.buildSetup("gemini-2.5-flash-native-audio-latest", "p", declarations))
+            .getJSONObject("setup").getJSONArray("tools").getJSONObject(1).getJSONArray("functionDeclarations")
+        assertFalse(fallback.getJSONObject(0).has("behavior"))
+        assertEquals("NON_BLOCKING", fallback.getJSONObject(1).getString("behavior"))
+    }
+
+    @Test fun setup38PreservesDeclarationSchemas() {
+        val declaration = JSONObject(
+            """{
+                "name":"portal.set_timer",
+                "description":"Set a timer",
+                "parameters":{
+                    "type":"OBJECT",
+                    "properties":{"seconds":{"type":"INTEGER","description":"Duration in seconds"}},
+                    "required":["seconds"]
+                },
+                "response":{"type":"OBJECT","properties":{"id":{"type":"STRING"}}}
+            }""",
+        )
+        val setup = JSONObject(LiveClient.buildSetup("gemini-3.8-live", "p", listOf(declaration)))
+            .getJSONObject("setup")
+        val serialized = setup.getJSONArray("tools").getJSONObject(1)
+            .getJSONArray("functionDeclarations").getJSONObject(0)
+        assertEquals("BLOCKING", serialized.optString("behavior"))
+        serialized.remove("behavior")
+        assertEquals(jsonValue(declaration), jsonValue(serialized))
+    }
+
+    @Test fun otherModelsKeepDeclarationBehaviorUnchanged() {
+        val declarations = listOf(
+            JSONObject("""{"name":"portal.get_time","description":"Get the time"}"""),
+            JSONObject("""{"name":"portal.get_volume","description":"Get volume","behavior":"NON_BLOCKING"}"""),
+        )
+        for (model in listOf(
+            "gemini-2.5-flash-native-audio-latest",
+            "models/gemini-2.5-flash-native-audio-latest",
+            "arbitrary-model",
+            "models/foo",
+            "gemini-3.8-live-preview",
+            "models/gemini-3.8-live-preview",
+        )) {
+            val setup = JSONObject(LiveClient.buildSetup(model, "p", declarations)).getJSONObject("setup")
+            val serialized = setup.getJSONArray("tools").getJSONObject(1).getJSONArray("functionDeclarations")
+            assertEquals(2, serialized.length())
+            assertFalse(model, serialized.getJSONObject(0).has("behavior"))
+            assertEquals(model, "NON_BLOCKING", serialized.getJSONObject(1).getString("behavior"))
+            declarations.forEachIndexed { index, declaration ->
+                assertEquals(model, jsonValue(declaration), jsonValue(serialized.getJSONObject(index)))
+            }
+        }
+    }
+
+    @Test fun setup38KeepsAudioTranscriptionSearchAndVad() {
+        val declaration = JSONObject("""{"name":"portal.get_time","description":"Get the time"}""")
+        val setup = JSONObject(LiveClient.buildSetup("gemini-3.8-live", "be nice", listOf(declaration)))
+            .getJSONObject("setup")
+        val expected = JSONObject(
+            """{
+                "model":"models/gemini-3.8-live",
+                "generationConfig":{"responseModalities":["AUDIO"]},
+                "systemInstruction":{"parts":[{"text":"be nice"}]},
+                "tools":[
+                    {"googleSearch":{}},
+                    {"functionDeclarations":[
+                        {"name":"portal.get_time","description":"Get the time","behavior":"BLOCKING"}
+                    ]}
+                ],
+                "inputAudioTranscription":{},
+                "outputAudioTranscription":{},
+                "realtimeInputConfig":{"automaticActivityDetection":{
+                    "startOfSpeechSensitivity":"START_SENSITIVITY_HIGH",
+                    "endOfSpeechSensitivity":"END_SENSITIVITY_LOW",
+                    "prefixPaddingMs":300,
+                    "silenceDurationMs":600
+                }}
+            }""",
+        )
+        // Exact schema comparison also guards against unsupported thinking/proactivity flags.
+        assertEquals("Unexpected Gemini 3.8 setup", jsonValue(expected), jsonValue(setup))
     }
 
     // ---- buildClientText ---------------------------------------------------------------------------
@@ -232,5 +358,12 @@ class LiveClientTest {
         assertEquals(10000L, LiveClient.parseDurationMs("10s"))
         assertEquals(0L, LiveClient.parseDurationMs(""))
         assertEquals(0L, LiveClient.parseDurationMs("garbage"))
+    }
+
+    /** Compare JSON by content without depending on object key order. */
+    private fun jsonValue(value: Any?): Any? = when (value) {
+        is JSONObject -> value.keys().asSequence().associateWith { jsonValue(value.get(it)) }
+        is JSONArray -> (0 until value.length()).map { jsonValue(value.get(it)) }
+        else -> value
     }
 }

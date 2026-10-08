@@ -64,16 +64,7 @@ class LiveClient(
     override fun sendAudio(pcm: ByteArray) {
         val sock = ws ?: return
         if (!setupDone) return
-        val b64 = Base64.getEncoder().encodeToString(pcm)
-        val mime = "audio/pcm;rate=${PcmCaptureFormat.SAMPLE_RATE}"
-        val msg = JSONObject().put(
-            "realtimeInput",
-            JSONObject().put(
-                "mediaChunks",
-                JSONArray().put(JSONObject().put("mimeType", mime).put("data", b64)),
-            ),
-        )
-        sock.send(msg.toString())
+        sock.send(buildRealtimeAudio(pcm))
     }
 
     /**
@@ -198,6 +189,17 @@ class LiveClient(
         const val VAD_PREFIX_PADDING_MS = 300
         const val VAD_SILENCE_DURATION_MS = 600
 
+        /** Current Live audio envelope; preserves the backend's 16 kHz PCM contract. */
+        fun buildRealtimeAudio(pcm: ByteArray): String = JSONObject().put(
+            "realtimeInput",
+            JSONObject().put(
+                "audio",
+                JSONObject()
+                    .put("mimeType", "audio/pcm;rate=${PcmCaptureFormat.SAMPLE_RATE}")
+                    .put("data", Base64.getEncoder().encodeToString(pcm)),
+            ),
+        ).toString()
+
         /**
          * One complete text turn as the user. `turnComplete = true` finishes the user's turn so the model
          * answers immediately (no VAD/end-of-speech wait). Pure builder, unit-tested like [buildSetup].
@@ -236,7 +238,15 @@ class LiveClient(
                 val toolsArray = JSONArray().put(JSONObject().put("googleSearch", JSONObject()))
                 if (functionDeclarations.isNotEmpty()) {
                     val declArray = JSONArray()
-                    functionDeclarations.forEach { declArray.put(it) }
+                    // 3.8 defaults to async tools; keep the engine's synchronous turn contract.
+                    // Copy shared declarations so a later 2.5 fallback keeps its original setup.
+                    val blockingTools = model.removePrefix("models/") == "gemini-3.8-live"
+                    functionDeclarations.forEach { declaration ->
+                        declArray.put(
+                            if (blockingTools) JSONObject(declaration.toString()).put("behavior", "BLOCKING")
+                            else declaration,
+                        )
+                    }
                     toolsArray.put(JSONObject().put("functionDeclarations", declArray))
                 }
                 put("tools", toolsArray)

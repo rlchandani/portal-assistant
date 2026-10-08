@@ -1,6 +1,7 @@
 package com.portal.assistant.gemini
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** Pure JVM tests for the model-id → subtitle label. */
@@ -28,6 +29,11 @@ class GeminiModelTest {
     }
 
     @Test fun defaultIsTheConfiguredModel() {
-        assertEquals("Gemini 2.5", GeminiModel.prettyName())
+        assertEquals("Gemini 3.8", GeminiModel.prettyName())
+    }
+
+    @Test fun modelPickerOffersLiveUpgradeAndLegacyFallback() {
+        assertTrue(GeminiModel.AVAILABLE.contains("gemini-3.8-live"))
+        assertTrue(GeminiModel.AVAILABLE.contains("gemini-2.5-flash-native-audio-latest"))
     }
 }

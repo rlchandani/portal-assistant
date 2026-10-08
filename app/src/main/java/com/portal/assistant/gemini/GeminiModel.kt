@@ -7,10 +7,11 @@ package com.portal.assistant.gemini
  */
 object GeminiModel {
 
-    const val ID = "gemini-2.5-flash-native-audio-latest"
+    const val ID = "gemini-3.8-live"
+    const val LEGACY_ID = "gemini-2.5-flash-native-audio-latest"
 
     /** Models the user can pick in Settings — [ID] is the default. Append here to expose a new option. */
-    val AVAILABLE: List<String> = listOf(ID)
+    val AVAILABLE: List<String> = listOf(ID, LEGACY_ID)
 
     /**
      * Vendor + version from a model id, e.g. "gemini-2.5-flash-native-audio-latest" → "Gemini 2.5".

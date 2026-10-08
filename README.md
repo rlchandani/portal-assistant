@@ -9,6 +9,9 @@ with just a small orange bar over whatever's on screen (no takeover). Open the a
 The voice backend is a swappable seam — "Jarvis" is the assistant; **Settings → Backend** picks
 **Gemini Live** (cloud, default) or a **local server** on your LAN.
 
+This fork adds **Gemini 3.8 Live**, with **Gemini 2.5** retained in Settings → Model
+as a fallback. See [upgrade, build and device-test notes](GEMINI_LIVE_UPGRADE.md).
+
 <p align="center">
   <a href="https://buymeacoffee.com/linuxbarista"><img src="docs/img/bmc-button.png" alt="Buy Me A Coffee" width="200"></a>
 </p>
